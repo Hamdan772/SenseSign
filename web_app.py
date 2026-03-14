@@ -11,18 +11,20 @@ import base64
 import copy
 import csv
 import itertools
+import threading
+import time
 
 import cv2 as cv
 import mediapipe as mp
 import numpy as np
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 from slr.model.classifier import KeyPointClassifier
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
 # ── Configuration ───────────────────────────────────────────────
-CONFIDENCE_THRESHOLD = 0.7
+CONFIDENCE_THRESHOLD = 0.55  # lowered for better recall
 
 # ── MediaPipe Tasks hand detector ──────────────────────────────
 BaseOptions = mp.tasks.BaseOptions
@@ -32,8 +34,9 @@ HandLandmarkerOptions = mp.tasks.vision.HandLandmarkerOptions
 _detector_options = HandLandmarkerOptions(
     base_options=BaseOptions(model_asset_path="slr/model/hand_landmarker.task"),
     num_hands=2,
-    min_hand_detection_confidence=0.7,
-    min_tracking_confidence=0.5,
+    min_hand_detection_confidence=0.5,   # lower = detect hands more reliably
+    min_tracking_confidence=0.4,
+    min_hand_presence_confidence=0.5,
 )
 detector = HandLandmarker.create_from_options(_detector_options)
 
@@ -87,27 +90,15 @@ def _draw_landmarks(image, pts):
     return image
 
 
-# ── Routes ──────────────────────────────────────────────────────
-@app.route("/")
-def index():
-    return render_template("index.html")
+# ── Remote feed state ───────────────────────────────────────────
+_remote_lock = threading.Lock()
+_remote_frame = None          # latest raw JPEG bytes from sender
+_remote_result = None         # latest detection result dict
+_remote_ts = 0                # timestamp of last frame
 
 
-@app.route("/process", methods=["POST"])
-def process_frame():
-    """Receive a JPEG frame from the browser, run detection, return results."""
-    data = request.get_json(silent=True)
-    if not data or "image" not in data:
-        return jsonify({"error": "no image"}), 400
-
-    # Decode base64 JPEG → numpy array
-    img_b64 = data["image"].split(",")[-1]  # strip data:image/jpeg;base64,
-    img_bytes = base64.b64decode(img_b64)
-    np_arr = np.frombuffer(img_bytes, np.uint8)
-    frame = cv.imdecode(np_arr, cv.IMREAD_COLOR)
-    if frame is None:
-        return jsonify({"error": "bad image"}), 400
-
+def _detect_hands(frame):
+    """Run hand detection + classification on a BGR frame. Returns result dict."""
     h, w = frame.shape[:2]
     rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -135,7 +126,6 @@ def process_frame():
             letter = detected_letter
             confidence = conf
 
-        # Normalised landmarks for client-side drawing
         norm_pts = [[lm.x, lm.y] for lm in hand_lms]
         hands.append({
             "landmarks": norm_pts,
@@ -144,11 +134,100 @@ def process_frame():
             "bbox": brect,
         })
 
-    return jsonify({
+    return {
         "letter": letter,
         "confidence": round(confidence * 100, 1),
         "hands": hands,
-    })
+    }
+
+
+# ── Routes ──────────────────────────────────────────────────────
+@app.route("/health")
+def health():
+    return "ok", 200
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/process", methods=["POST"])
+def process_frame():
+    """Receive a JPEG frame from the browser, run detection, return results."""
+    data = request.get_json(silent=True)
+    if not data or "image" not in data:
+        return jsonify({"error": "no image"}), 400
+
+    img_b64 = data["image"].split(",")[-1]
+    img_bytes = base64.b64decode(img_b64)
+    np_arr = np.frombuffer(img_bytes, np.uint8)
+    frame = cv.imdecode(np_arr, cv.IMREAD_COLOR)
+    if frame is None:
+        return jsonify({"error": "bad image"}), 400
+
+    return jsonify(_detect_hands(frame))
+
+
+# ── Remote feed (Raspberry Pi → Laptop) ─────────────────────────
+@app.route("/remote_frame", methods=["POST"])
+def remote_frame():
+    """Receive a raw JPEG from sender.py, process it, store results."""
+    global _remote_frame, _remote_result, _remote_ts
+
+    jpeg_bytes = request.get_data()
+    if not jpeg_bytes:
+        return jsonify({"error": "no data"}), 400
+
+    np_arr = np.frombuffer(jpeg_bytes, np.uint8)
+    frame = cv.imdecode(np_arr, cv.IMREAD_COLOR)
+    if frame is None:
+        return jsonify({"error": "bad image"}), 400
+
+    result = _detect_hands(frame)
+
+    with _remote_lock:
+        _remote_frame = jpeg_bytes
+        _remote_result = result
+        _remote_ts = time.time()
+
+    return jsonify({"ok": True})
+
+
+@app.route("/remote_result")
+def remote_result():
+    """Poll latest detection result from the remote feed."""
+    with _remote_lock:
+        if _remote_result and (time.time() - _remote_ts < 5):
+            return jsonify({"active": True, **_remote_result})
+    return jsonify({"active": False, "letter": "", "confidence": 0, "hands": []})
+
+
+@app.route("/remote_stream")
+def remote_stream():
+    """MJPEG stream of the remote camera for the web UI."""
+    def generate():
+        last_ts = 0
+        while True:
+            with _remote_lock:
+                if _remote_frame and _remote_ts > last_ts:
+                    frame_bytes = _remote_frame
+                    last_ts = _remote_ts
+                else:
+                    frame_bytes = None
+            if frame_bytes:
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + frame_bytes
+                    + b"\r\n"
+                )
+            time.sleep(0.05)
+
+    return Response(
+        generate(),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
 
 
 if __name__ == "__main__":

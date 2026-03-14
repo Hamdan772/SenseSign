@@ -16,4 +16,5 @@ COPY . .
 ENV PORT=5000
 EXPOSE ${PORT}
 
-CMD ["sh", "-c", "python -m gunicorn --bind 0.0.0.0:${PORT} --workers 2 --threads 4 --timeout 120 web_app:app"]
+# 1 worker + 4 threads: less memory, faster cold start on small instances
+CMD ["sh", "-c", "python -m gunicorn --bind 0.0.0.0:${PORT} --workers 1 --threads 4 --timeout 120 web_app:app"]

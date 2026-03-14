@@ -6,7 +6,7 @@
     <title>SenseSign — ASL Translator</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
     <style>
         :root {
             --accent: #6d5cfc;
@@ -207,6 +207,23 @@
         #startBtn:active { transform: translateY(-1px); }
         #startBtn svg { width: 20px; height: 20px; position: relative; }
         #startBtn.hidden, .hero.hidden { display: none; }
+
+        #remoteBtn {
+            display: inline-flex; align-items: center; gap: .7rem;
+            padding: 1rem 2.4rem; border: 1px solid var(--border-light); border-radius: var(--radius-sm);
+            background: rgba(255,255,255,.04);
+            color: var(--text); font-size: 1.05rem; font-weight: 600; cursor: pointer;
+            font-family: 'Inter', sans-serif;
+            transition: all .25s cubic-bezier(.16,1,.3,1);
+        }
+        #remoteBtn:hover { background: rgba(255,255,255,.08); transform: translateY(-3px); box-shadow: 0 8px 40px rgba(34,211,238,.15); }
+        #remoteBtn:active { transform: translateY(-1px); }
+        #remoteBtn svg { width: 20px; height: 20px; }
+
+        /* Remote feed image */
+        .video-panel img.remote-feed {
+            display: block; width: 100%; height: auto;
+        }
 
         .hero-features {
             display: flex; gap: 2rem; margin-top: 1rem;
@@ -414,7 +431,7 @@
         }
         .loader-logo {
             width: 80px; height: 80px;
-            animation: loaderPulse 1.8s ease-in-out infinite;
+            animation: loaderPulse 0.9s ease-in-out infinite;
         }
         .loader-logo svg { width: 100%; height: 100%; }
         @keyframes loaderPulse {
@@ -428,7 +445,7 @@
         .loader-bar {
             height: 100%; width: 0%; border-radius: 3px;
             background: linear-gradient(90deg, var(--accent), var(--cyan));
-            animation: loaderFill 1.8s cubic-bezier(.4,0,.2,1) forwards;
+            animation: loaderFill 0.8s cubic-bezier(.4,0,.2,1) forwards;
         }
         @keyframes loaderFill {
             0%   { width: 0%; }
@@ -516,7 +533,7 @@
             </svg>
         </div>
         <div class="loader-bar-wrap"><div class="loader-bar"></div></div>
-        <div class="loader-text">SenseSign</div>
+        <div class="loader-text" id="loaderText">SenseSign</div>
     </div>
 
     <div class="bg-canvas">
@@ -560,6 +577,10 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
                     Start Camera
                 </button>
+                <button id="remoteBtn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    Remote Camera
+                </button>
             </div>
             <div class="hero-features">
                 <div class="hero-feat">
@@ -582,9 +603,10 @@
             <div class="video-panel">
                 <video id="video" autoplay playsinline></video>
                 <canvas id="canvas"></canvas>
+                <img id="remoteFeed" class="remote-feed" style="display:none" alt="Remote camera feed">
                 <div class="video-badge">
                     <div class="rec-dot"></div>
-                    <span>Live</span>
+                    <span id="feedLabel">Live</span>
                 </div>
                 <div class="fps-badge" id="fpsBadge">-- fps</div>
             </div>
@@ -668,6 +690,7 @@ const confValue  = document.getElementById("confValue");
 const holdBar    = document.getElementById("holdBar");
 const sentenceEl = document.getElementById("sentence");
 const startBtn   = document.getElementById("startBtn");
+const remoteBtn  = document.getElementById("remoteBtn");
 const hero       = document.getElementById("hero");
 const mainUI     = document.getElementById("mainUI");
 const fpsBadge   = document.getElementById("fpsBadge");
@@ -675,27 +698,63 @@ const pageWrap   = document.getElementById("pageWrap");
 const headerEl   = document.getElementById("headerEl");
 const logoLink   = document.getElementById("logoLink");
 const loaderScreen = document.getElementById("loaderScreen");
+const remoteFeed = document.getElementById("remoteFeed");
+const feedLabel  = document.getElementById("feedLabel");
 
 let cameraActive = false;
+let remoteMode   = false;
 
 // ── Loading screen + entrance animation ──────────────────
+const loaderText = document.getElementById("loaderText");
+
+function revealPage() {
+    loaderScreen.classList.add("fade-out");
+    pageWrap.classList.add("reveal");
+    headerEl.classList.add("animate-in");
+    hero.classList.add("animate-in");
+}
+
+// Ping /health to wake Render; show status while waiting
 window.addEventListener("load", () => {
-    setTimeout(() => {
-        loaderScreen.classList.add("fade-out");
-        pageWrap.classList.add("reveal");
-        headerEl.classList.add("animate-in");
-        hero.classList.add("animate-in");
-    }, 2000);
+    const t0 = Date.now();
+    let attempts = 0;
+
+    async function ping() {
+        attempts++;
+        try {
+            const r = await fetch("/health", { cache: "no-store" });
+            if (r.ok) {
+                // Ensure at least 600ms so the animation is visible
+                const waited = Date.now() - t0;
+                setTimeout(revealPage, Math.max(0, 600 - waited));
+                return;
+            }
+        } catch (_) { /* server not ready */ }
+        // Still waking up — update loader text
+        if (attempts === 1) loaderText.textContent = "Waking up server…";
+        else if (attempts === 3) loaderText.textContent = "Almost there…";
+        setTimeout(ping, 2000);
+    }
+    ping();
 });
 
 // ── Logo click → back to home (only from camera page) ────
 logoLink.addEventListener("click", () => {
-    if (!cameraActive) return;
-    // Stop camera
-    const stream = video.srcObject;
-    if (stream) stream.getTracks().forEach(t => t.stop());
-    video.srcObject = null;
-    cameraActive = false;
+    if (!cameraActive && !remoteMode) return;
+    // Stop camera or remote
+    if (cameraActive) {
+        const stream = video.srcObject;
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        video.srcObject = null;
+        cameraActive = false;
+    }
+    if (remoteMode) {
+        remoteMode = false;
+        remoteFeed.src = "";
+        remoteFeed.style.display = "none";
+        canvas.style.display = "";
+        video.style.display = "";
+    }
     stopLoop();
     // Reset UI
     mainUI.classList.remove("active");
@@ -912,6 +971,77 @@ function copySentence()  {
     btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px"><polyline points="20 6 9 17 4 12"/></svg> Copied!';
     setTimeout(() => btn.innerHTML = orig, 1200);
 }
+
+// ── Remote Camera mode ────────────────────────────────────
+let remoteDetectId = null;
+
+remoteBtn.addEventListener("click", () => {
+    hero.classList.add("hidden");
+    hero.classList.remove("animate-in");
+    mainUI.classList.add("active");
+    remoteMode = true;
+    feedLabel.textContent = "Remote";
+
+    // Hide local video/canvas, show MJPEG stream
+    video.style.display = "none";
+    canvas.style.display = "none";
+    remoteFeed.src = "/remote_stream";
+    remoteFeed.style.display = "block";
+
+    // Poll detection results
+    remoteDetectId = setInterval(remoteDetectLoop, 200);
+});
+
+async function remoteDetectLoop() {
+    try {
+        const res = await fetch("/remote_result");
+        const data = await res.json();
+        if (!data.active) {
+            fpsBadge.textContent = "waiting…";
+            return;
+        }
+
+        fpsBadge.textContent = "remote";
+        latestHands = data.hands || [];
+
+        const { letter, confidence } = data;
+        letterEl.textContent = letter || "—";
+        letterEl.classList.toggle("empty", !letter);
+
+        const offset = CIRCUM - (confidence / 100) * CIRCUM;
+        confRing.style.strokeDashoffset = offset;
+        confValue.textContent = confidence + "%";
+
+        if (letter && letter === lastLetter) {
+            // hold tracking
+        } else {
+            lastLetter  = letter;
+            holdStart   = letter ? Date.now() : null;
+            letterAdded = false;
+            holdBar.style.width = "0%";
+        }
+
+        // Hold bar for remote mode
+        if (lastLetter && holdStart && !letterAdded) {
+            const elapsed = Date.now() - holdStart;
+            const pct = Math.min(elapsed / HOLD_MS * 100, 100);
+            holdBar.style.width = pct + "%";
+            if (elapsed >= HOLD_MS) {
+                sentence += lastLetter;
+                sentenceEl.textContent = sentence;
+                letterAdded = true;
+                holdBar.style.width = "100%";
+            }
+        }
+    } catch (e) { /* ignore */ }
+}
+
+// Extend stopLoop to also clear remote polling
+const _origStopLoop = stopLoop;
+stopLoop = function() {
+    _origStopLoop();
+    if (remoteDetectId) { clearInterval(remoteDetectId); remoteDetectId = null; }
+};
 </script>
 </body>
 </html>
