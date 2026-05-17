@@ -47,29 +47,48 @@ class RadarBeeper:
         threading.Thread(target=self._beep_loop, daemon=True).start()
         
     def _beep_loop(self):
+        fs = 44100
         while self.running:
             if self.active and self.dist_cm > 0 and not self.muted:
                 if self.dist_cm < 25:
-                    # Critical Proximity Zone: ultra-rapid buzz
-                    delay = 0.03
+                    # Critical Proximity Zone: ultra-rapid high pitch beep
+                    delay = 0.05
+                    duration = 0.05
+                    freq = 1200
                 elif self.dist_cm <= 200:
-                    # Dynamic Warning Zone: map [25, 200] cm to [0.03, 0.5] seconds
+                    # Dynamic Warning Zone: map [25, 200] cm to [0.05, 0.4] seconds
                     fraction = (self.dist_cm - 25) / (200 - 25)
-                    delay = 0.03 + fraction * (0.5 - 0.03)
+                    delay = 0.05 + fraction * 0.35
+                    duration = 0.05 + fraction * 0.1
+                    # Map frequency from 1200 Hz down to 600 Hz
+                    freq = 1200 - fraction * 600
                 else:
-                    # Safe Zone: slow heartbeat
-                    delay = 4.0
+                    # Safe Zone: slow heartbeat lower pitch beep
+                    delay = 1.0
+                    duration = 0.2
+                    freq = 400
 
                 try:
-                    # Apple built-in hardware sound (Popen allows non-blocking immediate playback)
-                    subprocess.Popen(
-                        ["afplay", "/System/Library/Sounds/Ping.aiff"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
-                    )
-                except:
-                    pass
-                time.sleep(delay)
+                    # Generate a seamless beep using sounddevice
+                    t = np.linspace(0, duration, int(fs * duration), endpoint=False)
+                    wave = 0.5 * np.sin(2 * np.pi * freq * t)
+                    # Apply a simple envelope to prevent clicking audio artifacts
+                    envelope = np.ones_like(wave)
+                    fade_len = int(0.01 * fs)
+                    if fade_len > len(t) // 2: 
+                        fade_len = len(t) // 2
+                    if fade_len > 0:
+                        fade_in = np.linspace(0, 1, fade_len)
+                        fade_out = np.linspace(1, 0, fade_len)
+                        envelope[:fade_len] = fade_in
+                        envelope[-fade_len:] = fade_out
+                    
+                    sd.play(wave * envelope, samplerate=fs)
+                    sd.wait() # Wait for the duration to finish naturally
+                    time.sleep(max(0, delay - duration))
+                except Exception as e:
+                    print(f"Audio Beep Error: {e}")
+                    time.sleep(delay)
             else:
                 time.sleep(0.1)
 
@@ -97,8 +116,12 @@ def handle_visual_qa(frame, beeper, state):
     print("INFO: Initializing Voice Query...")
     beeper.muted = True
     try:
-        # User's provided Groq Key
-        client = Groq(api_key="YOUR_GROQ_API_KEY")
+        # Load API key from dot environment or environment variables
+        groq_api_key = os.getenv("GROQ_API_KEY", "")
+        if not groq_api_key:
+            raise ValueError("GROQ_API_KEY is not set in environment or .env file.")
+        
+        client = Groq(api_key=groq_api_key)
         
         # Audio capturing
         subprocess.Popen(["afplay", "/System/Library/Sounds/Glass.aiff"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -192,6 +215,7 @@ def main():
     beeper = RadarBeeper()
     
     cv.namedWindow("SenseSign", cv.WINDOW_NORMAL)
+    cv.resizeWindow("SenseSign", 1280, 960) # Ensure window spawns large on laptop screens
     cv.setMouseCallback("SenseSign", click_button, param=app_state)
 
     print("INFO: Ready and listening for packets...")
@@ -338,12 +362,12 @@ def main():
                     cv.putText(debug_image, btn_text, (90, 104), cv.FONT_HERSHEY_DUPLEX, 1.2, (255, 255, 255), 2, cv.LINE_AA)
 
                     # 2. Top-Right Global Specs (System Telemetry Hub)
-                    draw_transparent_rect(debug_image, (840, 40), (1240, 180), (10, 10, 10), 0.7)
-                    cv.putText(debug_image, f"FPS: {fps:0.1f}" if type(fps) != str else f"FPS: {fps}", (860, 96), cv.FONT_HERSHEY_DUPLEX, 1.0, (255, 255, 255), 2, cv.LINE_AA)
+                    draw_transparent_rect(debug_image, (900, 40), (1240, 180), (10, 10, 10), 0.7)
+                    cv.putText(debug_image, f"FPS: {fps:0.1f}" if type(fps) != str else f"FPS: {fps}", (920, 96), cv.FONT_HERSHEY_DUPLEX, 1.0, (255, 255, 255), 2, cv.LINE_AA)
                     
-                    lidar_status = "Connected" if dist_cm > 0 else "Disconnected"
+                    lidar_status = "Connected" if dist_cm > 0 else "Offline / Blocked"
                     lidar_color = (0, 255, 0) if dist_cm > 0 else (0, 0, 255)
-                    cv.putText(debug_image, f"LiDAR: {lidar_status}", (860, 150), cv.FONT_HERSHEY_DUPLEX, 0.9, lidar_color, 2, cv.LINE_AA)
+                    cv.putText(debug_image, f"LiDAR: {lidar_status}", (920, 150), cv.FONT_HERSHEY_DUPLEX, 0.8, lidar_color, 2, cv.LINE_AA)
                     
                     cv.imshow("SenseSign", debug_image)
 
