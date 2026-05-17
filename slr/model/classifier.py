@@ -1,11 +1,15 @@
 import numpy as np
 
+import tensorflow as tf
 try:
-    from ai_edge_litert.interpreter import Interpreter
-except ImportError:
-    import tensorflow as tf
+    # Standard TF Lite Interpreter path
     Interpreter = tf.lite.Interpreter
-
+except AttributeError:
+    # Fallback to older paths if needed
+    try:
+        Interpreter = tf.compat.v1.lite.Interpreter
+    except AttributeError:
+        from tensorflow.lite.python.interpreter import Interpreter
 
 class KeyPointClassifier(object):
     def __init__(
