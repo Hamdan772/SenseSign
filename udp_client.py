@@ -93,7 +93,7 @@ while ret:
     # Read distance
     new_dist = read_tfluna()
     # Check for valid TF-Luna range (20cm to 800cm)
-    if new_dist != -1 and 20 <= new_dist <= 800:
+    if new_dist != -1 and 0 <= new_dist <= 800:
         # Apply smoothing filter for higher accuracy
         dist_cm = dist_filter.update(new_dist)
 

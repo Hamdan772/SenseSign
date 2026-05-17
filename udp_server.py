@@ -1,3 +1,5 @@
+import os
+os.environ['GLOG_minloglevel'] = '2'
 import cv2 as cv
 import socket
 import pickle
@@ -378,6 +380,7 @@ def main():
             pass
 
     beeper.running = False
+    sd.stop()
     cv.destroyAllWindows()
 
 if __name__ == '__main__':
