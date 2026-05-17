@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: sensespeak-asl
-    runtime: docker
-    plan: starter         # $7/mo — always-on (free plan sleeps after 15 min)
-    autoDeploy: true
-    envVars:
-      - key: PORT
-        value: "5000"
